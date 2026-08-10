@@ -23,8 +23,9 @@ import { registerBidder } from '../src/adapters/bidderFactory.js';
 import { getRefererInfo } from '../src/refererDetection.js';
 import { getViewportSize } from '../libraries/viewport/viewport.js';
 import { getConnectionInfo } from '../libraries/connectionInfo/connectionUtils.js';
+import { getStorageManager } from '../src/storageManager.js';
 
-const NM_VERSION = '4.5.1';
+const NM_VERSION = '4.6.0';
 const PBJS_VERSION = 'v$prebid.version$';
 const GVLID = 1060;
 const BIDDER_CODE = 'nextMillennium';
@@ -136,6 +137,50 @@ const ALLOWED_ORTB2_IMP_PARAMETERS = [
   'video.companiontype',
 ];
 
+export const STORAGE_KEY = 'nmuids';
+const STORAGE_TIME = 36e5 * 24 * 365;
+export const storage = {
+  _storageManager: getStorageManager({ bidderCode: BIDDER_CODE }),
+  isEnabled() {
+    return this._storageManager && (this._storageManager.localStorageIsEnabled() || this._storageManager.cookiesAreEnabled());
+  },
+
+  get() {
+    if (!this._storageManager) return;
+
+    let nmUids;
+
+    if (this.isEnabled()) {
+      if (this._storageManager.localStorageIsEnabled()) {
+        nmUids = this._storageManager.getDataFromLocalStorage(STORAGE_KEY);
+      } else {
+        if (this._storageManager.cookiesAreEnabled()) nmUids = this._storageManager.getCookie(STORAGE_KEY);
+      };
+    } else {
+      this.remove();
+    };
+
+    return nmUids || undefined;
+  },
+
+  set(nmUids) {
+    if (!this._storageManager || !nmUids) return;
+    if (this._storageManager.localStorageIsEnabled()) this._storageManager.setDataInLocalStorage(STORAGE_KEY, nmUids);
+    if (this._storageManager.cookiesAreEnabled()) {
+      const expires = `expires=${(new Date(Date.now() + STORAGE_TIME)).toUTCString()}`;
+      this._storageManager.setCookie(STORAGE_KEY, nmUids, expires);
+    };
+  },
+
+  remove() {
+    const win = getWindowTop();
+    if (!win) return;
+
+    win.localStorage.removeItem(STORAGE_KEY);
+    win.document.cookie = `${STORAGE_KEY}}=; Max-Age=-1;`;
+  },
+};
+
 export const spec = {
   code: BIDDER_CODE,
   supportedMediaTypes: [BANNER, VIDEO],
@@ -156,14 +201,12 @@ export const spec = {
     const device = getDeviceObj();
     const source = getSourceObj(validBidRequests, bidderRequest);
     const tmax = deepAccess(bidderRequest, 'timeout') || DEFAULT_TMAX;
+    const ext = getExt();
 
     const postBody = {
       id: bidderRequest?.bidderRequestId,
       tmax,
-      ext: {
-        next_mil_imps: [],
-      },
-
+      ext,
       device,
       site,
       source,
@@ -250,6 +293,7 @@ export const spec = {
       bids.push(resp.bid);
     });
 
+    storage.set(response?.ext?.next_mil?.nmUids);
     this.getUrlPixelMetric(EVENTS.BID_RESPONSE, bids.flat());
 
     return bidResponses;
@@ -334,6 +378,19 @@ export const spec = {
     };
   },
 };
+
+export function getExt() {
+  const nmUids = storage.get();
+  const ext = {
+    next_mil_imps: [],
+    next_mil: {
+      storageEnable: storage.isEnabled(),
+      nmUids,
+    },
+  };
+
+  return ext;
+}
 
 export function getExtNextMilImp(impId, bid) {
   if (typeof window?.nmmRefreshCounts[bid.adUnitCode] === 'number') ++window.nmmRefreshCounts[bid.adUnitCode];
